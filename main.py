@@ -118,5 +118,7 @@ def admin_callback(call):
 
 # --- KHỞI CHẠY BOT ---
 if __name__ == '__main__':
+    bot.remove_webhook()
     bot.infinity_polling()
+    
         
