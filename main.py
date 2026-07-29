@@ -3,7 +3,6 @@ import threading
 from flask import Flask
 import telebot
 from telebot import types
-import pandas as pd
 
 # --- 1. FLASK WEB SERVER (Duy trì bot trên Render) ---
 app = Flask('')
@@ -21,17 +20,51 @@ t.start()
 
 # --- 2. CẤU HÌNH BOT ---
 TOKEN = '7850532150:AAFFPO5R9ZQb6c_mG7jLLSNz6zf-xzmjnAY'
-ADMIN_ID = 123456789
+ADMIN_ID = 7940654648  # ID Telegram của bạn
 
 FOLDER_RECEIPT = 'bien_lai'
 
 bot = telebot.TeleBot(TOKEN)
 pending_review = {}
+user_states = {}
 
-# --- 3. XỬ LÝ KHI NGƯỜI CHƠI GỬI ẢNH BIÊN LAI ---
+# --- 3. XỬ LÝ LỆNH /START & MENU ---
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(types.KeyboardButton('⚔️ Register Solo 1v1'))
+    markup.add(types.KeyboardButton('🏆 Register 5v5 Team'))
+    bot.send_message(
+        message.chat.id,
+        "🎮 **Welcome to MLBB KH Tournament!**\nPlease choose your registration category below:",
+        parse_mode='Markdown',
+        reply_markup=markup
+    )
+
+@bot.message_handler(func=lambda msg: msg.text in ['⚔️ Register Solo 1v1', '🏆 Register 5v5 Team'])
+def handle_registration_choice(message):
+    reg_type = 'solo' if 'Solo' in message.text else 'team'
+    user_states[message.from_user.id] = {'reg_type': reg_type, 'step': 'waiting_for_ign'}
+    bot.reply_to(message, "📝 Please enter your **IGN (In-Game Name)**:", parse_mode='Markdown')
+
+@bot.message_handler(func=lambda message: message.from_user.id in user_states and user_states[message.from_user.id].get('step') == 'waiting_for_ign')
+def handle_ign(message):
+    user_id = message.from_user.id
+    ign = message.text
+    user_states[user_id]['ign'] = ign
+    user_states[user_id]['step'] = 'waiting_for_receipt'
+    bot.reply_to(message, f"✅ IGN saved: **{ign}**\n\n📸 Now please send a screenshot of your payment receipt (photo).", parse_mode='Markdown')
+
+# --- 4. XỬ LÝ KHI NGƯỜI CHƠI GỬI ẢNH BIÊN LAI ---
 @bot.message_handler(content_types=['photo'])
 def handle_receipt(message):
     user_id = message.from_user.id
+    
+    # Nếu người chơi gửi ảnh luôn mà chưa bấm menu, mặc định là solo
+    if user_id not in user_states:
+        user_states[user_id] = {'reg_type': 'solo', 'ign': message.from_user.first_name}
+    
+    state = user_states[user_id]
     username = message.from_user.username or message.from_user.first_name or str(user_id)
     
     file_info = bot.get_file(message.photo[-1].file_id)
@@ -46,21 +79,22 @@ def handle_receipt(message):
     pending_review[str(user_id)] = {
         'uid': user_id,
         'data': username,
-        'reg_type': 'solo',
+        'ign': state.get('ign', 'Unknown'),
+        'reg_type': state.get('reg_type', 'solo'),
         'file_id': message.photo[-1].file_id,
     }
 
     markup = types.InlineKeyboardMarkup()
-    btn_approve = types.InlineKeyboardButton(
-        '✅ Chấp thuận', callback_data=f'FA:{user_id}'
-    )
-    btn_reject = types.InlineKeyboardButton(
-        '❌ Từ chối', callback_data=f'RJ:{user_id}'
-    )
+    btn_approve = types.InlineKeyboardButton('✅ Chấp thuận', callback_data=f'FA:{user_id}')
+    btn_reject = types.InlineKeyboardButton('❌ Từ chối', callback_data=f'RJ:{user_id}')
     markup.add(btn_approve, btn_reject)
 
     caption = (
-        f'🚨 **Hóa đơn mới cần xem xét!**\n- Người gửi: @{username}\n- ID: `{user_id}`'
+        f"🚨 **Hóa đơn mới cần xem xét!**\n"
+        f"- Người gửi: @{username}\n"
+        f"- IGN: {state.get('ign', 'N/A')}\n"
+        f"- Loại: {state.get('reg_type', 'solo').upper()}\n"
+        f"- ID: `{user_id}`"
     )
     try:
         bot.send_photo(
@@ -77,8 +111,10 @@ def handle_receipt(message):
         message,
         '⏳ Your payment receipt has been sent to the organizers. Please wait a moment for verification.',
     )
+    # Reset state sau khi gửi xong
+    user_states.pop(user_id, None)
 
-# --- 4. XỬ LÝ NÚT BẤM DUYỆT CỦA ADMIN ---
+# --- 5. XỬ LÝ NÚT BẤM DUYỆT CỦA ADMIN ---
 @bot.callback_query_handler(func=lambda c: c.data.startswith(('FA:', 'RJ:')))
 def admin_callback(call):
     if call.from_user.id != ADMIN_ID:
@@ -89,17 +125,11 @@ def admin_callback(call):
     review = pending_review.pop(token, None)
 
     if review is None:
-        bot.answer_callback_query(
-            call.id, '⚠️ This review has already been processed.'
-        )
-        bot.edit_message_reply_markup(
-            call.message.chat.id, call.message.message_id, reply_markup=None
-        )
+        bot.answer_callback_query(call.id, '⚠️ This review has already been processed.')
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
         return
 
-    bot.edit_message_reply_markup(
-        call.message.chat.id, call.message.message_id, reply_markup=None
-    )
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
 
     if action == 'FA':
         bot.answer_callback_query(call.id, '✅ Approved successfully!')
@@ -121,4 +151,3 @@ if __name__ == '__main__':
     bot.remove_webhook()
     bot.infinity_polling()
     
-        
