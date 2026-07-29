@@ -20,7 +20,7 @@ t = threading.Thread(target=run_web)
 t.start()
 
 # --- 2. CẤU HÌNH BOT ---
-TOKEN = '781234567:AAHdf73hjsdf_abcXYZ123456'
+TOKEN = '7850532150:AAFFPO5R9ZQb6c_mG7jLLSNz6zf-xzmjnAY'
 ADMIN_ID = 123456789
 
 FOLDER_RECEIPT = 'bien_lai'
