@@ -21,7 +21,7 @@ t.start()
 
 # --- 2. CẤU HÌNH BOT ---
 TOKEN = '781234567:AAHdf73hjsdf_abcXYZ123456'
-ADMIN_ID = '123456789'
+ADMIN_ID = 123456789
 
 FOLDER_RECEIPT = 'bien_lai'
 
@@ -37,8 +37,8 @@ def handle_receipt(message):
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded_file = bot.download_file(file_info.file_path)
 
-    if not os.path.exists(FOLDER_RECEIPT)
-    os.makedirs(FOLDER_RECEIPT)
+    if not os.path.exists(FOLDER_RECEIPT):
+        os.makedirs(FOLDER_RECEIPT)
     img_path = os.path.join(FOLDER_RECEIPT, f'{user_id}.jpg')
     with open(img_path, 'wb') as new_file:
         new_file.write(downloaded_file)
@@ -119,4 +119,4 @@ def admin_callback(call):
 # --- KHỞI CHẠY BOT ---
 if __name__ == '__main__':
     bot.infinity_polling()
-  
+        
