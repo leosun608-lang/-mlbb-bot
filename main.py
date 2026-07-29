@@ -1,12 +1,15 @@
 import os
+import time
 import threading
-import pandas as pd
 import random
+import pandas as pd
 from flask import Flask
 import telebot
 from telebot import types
 
-# --- 1. FLASK WEB SERVER (Keep-alive for Render) ---
+# ==========================================
+# 1. FLASK WEB SERVER (KEEP-ALIVE FOR RENDER)
+# ==========================================
 app = Flask('')
 
 @app.route('/')
@@ -17,11 +20,22 @@ def run_web():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
+# Khởi chạy Flask Server trên thread phụ để Render không bị Timeout
 t = threading.Thread(target=run_web, daemon=True)
 t.start()
 
-# --- 2. CONFIGURATION & SETUP ---
-TOKEN = os.environ.get('BOT_TOKEN', '7850532150:AAHP9JuJZUZmTfGI6D7VQsNzy913mEX-yGQ')
+# ==========================================
+# 2. CONFIGURATION & TOKEN SANITIZATION
+# ==========================================
+RAW_TOKEN = os.environ.get('BOT_TOKEN', '7850532150:AAHP9JuJZUZmTfGI6D7VQsNzy913mEX-yGQ')
+# Tự động loại bỏ khoảng trắng, dấu ngoặc kép thừa
+TOKEN = RAW_TOKEN.strip().strip('"').strip("'").strip() if RAW_TOKEN else ""
+
+if TOKEN:
+    masked = TOKEN[:7] + "..." + TOKEN[-4:] if len(TOKEN) > 11 else "***"
+    print(f"[SYSTEM INFO] Bot is running with Token: {masked}")
+else:
+    print("[SYSTEM ERROR] Invalid or missing BOT_TOKEN!")
 
 ADMIN_ID = int(os.environ.get('ADMIN_ID', 7940654648))
 
@@ -29,11 +43,17 @@ FOLDER_RECEIPT = 'bien_lai'
 EXCEL_FILE = 'danh_sach_giai_dau.xlsx'
 QR_IMAGE_PATH = 'payment_qr.png'
 
+# Tự động tạo thư mục lưu ảnh biên lai nếu chưa có
+if not os.path.exists(FOLDER_RECEIPT):
+    os.makedirs(FOLDER_RECEIPT, exist_ok=True)
+
 excel_lock = threading.Lock()
 bot = telebot.TeleBot(TOKEN)
 user_states = {}
 
-# Initialize Excel file structure
+# ==========================================
+# 3. EXCEL DATABASE MANAGEMENT
+# ==========================================
 def init_excel():
     with excel_lock:
         if not os.path.exists(EXCEL_FILE):
@@ -42,10 +62,10 @@ def init_excel():
                 'Name_Phone', 'Team_Members', 'Reg_Type', 'Status'
             ])
             df.to_excel(EXCEL_FILE, index=False)
+            print(f"[SYSTEM INFO] Initialized Excel file: {EXCEL_FILE}")
 
 init_excel()
 
-# Save user entry to Excel
 def save_to_excel(user_id, username, ign, contact, members, reg_type, status='Pending'):
     with excel_lock:
         try:
@@ -76,9 +96,8 @@ def save_to_excel(user_id, username, ign, contact, members, reg_type, status='Pe
             
             df.to_excel(EXCEL_FILE, index=False)
         except Exception as e:
-            print(f"Excel saving error: {e}")
+            print(f"[ERROR] Excel saving error: {e}")
 
-# Update approval status in Excel
 def update_excel_status(user_id, status):
     with excel_lock:
         try:
@@ -87,10 +106,12 @@ def update_excel_status(user_id, status):
                 df.loc[df['User_ID'] == int(user_id), 'Status'] = status
                 df.to_excel(EXCEL_FILE, index=False)
         except Exception as e:
-            print(f"Excel status update error: {e}")
+            print(f"[ERROR] Excel status update error: {e}")
 
-# --- 3. START COMMAND & MODE SELECTION ---
-@bot.message_handler(commands=['start'])
+# ==========================================
+# 4. USER REGISTRATION FLOW (ENGLISH UI)
+# ==========================================
+@bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(types.KeyboardButton('⚔️ Register Solo 1v1'))
@@ -127,7 +148,6 @@ def handle_registration_choice(message):
     
     bot.reply_to(message, prompt, parse_mode='Markdown')
 
-# --- 4. STEP-BY-STEP INPUT HANDLING ---
 @bot.message_handler(func=lambda msg: msg.from_user.id in user_states and msg.content_type == 'text')
 def handle_text_steps(message):
     user_id = message.from_user.id
@@ -150,11 +170,9 @@ def handle_text_steps(message):
     elif step == 'waiting_for_contact':
         state['contact'] = message.text
         
-        # If Solo 1v1 -> Proceed directly to payment QR
         if state['reg_type'] == 'Solo 1v1':
             state['members'] = 'N/A'
             send_payment_qr(message, user_id)
-        # If Team 5v5 -> Ask for the other 4 team members
         else:
             state['step'] = 'waiting_for_members'
             bot.reply_to(
@@ -170,7 +188,6 @@ def handle_text_steps(message):
         state['members'] = message.text
         send_payment_qr(message, user_id)
 
-# Send ABA Payment QR Code with instructions
 def send_payment_qr(message, user_id):
     user_states[user_id]['step'] = 'waiting_for_receipt'
     caption_text = (
@@ -188,7 +205,7 @@ def send_payment_qr(message, user_id):
                 parse_mode='Markdown'
             )
         except Exception as e:
-            print(f"Error sending QR image: {e}")
+            print(f"[ERROR] Sending QR image failed: {e}")
             bot.send_message(message.chat.id, caption_text, parse_mode='Markdown')
     else:
         bot.send_message(
@@ -197,7 +214,9 @@ def send_payment_qr(message, user_id):
             parse_mode='Markdown'
         )
 
-# --- 5. RECEIPT SUBMISSION HANDLING ---
+# ==========================================
+# 5. RECEIPT SUBMISSION & ADMIN NOTIFICATION
+# ==========================================
 @bot.message_handler(content_types=['photo'])
 def handle_receipt(message):
     user_id = message.from_user.id
@@ -216,9 +235,6 @@ def handle_receipt(message):
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded_file = bot.download_file(file_info.file_path)
 
-    if not os.path.exists(FOLDER_RECEIPT):
-        os.makedirs(FOLDER_RECEIPT, exist_ok=True)
-        
     img_path = os.path.join(FOLDER_RECEIPT, f'{user_id}.jpg')
     with open(img_path, 'wb') as new_file:
         new_file.write(downloaded_file)
@@ -250,7 +266,7 @@ def handle_receipt(message):
             reply_markup=markup,
         )
     except Exception as e:
-        print(f'Error sending to admin: {e}')
+        print(f"[ERROR] Error sending receipt to admin: {e}")
 
     bot.reply_to(
         message,
@@ -259,7 +275,9 @@ def handle_receipt(message):
     )
     user_states.pop(user_id, None)
 
-# --- 6. ADMIN CALLBACK HANDLER ---
+# ==========================================
+# 6. ADMIN CALLBACKS & AUTO-PAIRING
+# ==========================================
 @bot.callback_query_handler(func=lambda c: c.data.startswith(('FA:', 'RJ:')))
 def admin_callback(call):
     if call.from_user.id != ADMIN_ID:
@@ -283,7 +301,7 @@ def admin_callback(call):
                 parse_mode='Markdown',
             )
         except Exception as e:
-            print(f"Error notifying user {target_user_id}: {e}")
+            print(f"[ERROR] Error notifying user {target_user_id}: {e}")
     else:
         update_excel_status(target_user_id, 'Rejected')
         bot.answer_callback_query(call.id, '❌ Rejected.')
@@ -294,9 +312,8 @@ def admin_callback(call):
                 parse_mode='Markdown',
             )
         except Exception as e:
-            print(f"Error notifying user {target_user_id}: {e}")
+            print(f"[ERROR] Error notifying user {target_user_id}: {e}")
 
-# --- 7. AUTO-PAIRING FEATURE FOR ADMIN ---
 @bot.message_handler(commands=['ghepcap_solo', 'ghepcap_team'])
 def auto_pairing(message):
     if message.from_user.id != ADMIN_ID:
@@ -335,14 +352,26 @@ def auto_pairing(message):
         except Exception as e:
             bot.reply_to(message, f"❌ Error reading pairing data: {e}")
 
-# --- 8. BOT LAUNCH ---
+# ==========================================
+# 7. BOT LAUNCH & AUTO-RECOVERY LOOP
+# ==========================================
 if __name__ == '__main__':
     print("Starting MLBB Tournament Bot...")
+    
+    # Xóa Webhook cũ để tránh kẹt kết nối
     try:
         bot.remove_webhook()
+        print("[SYSTEM INFO] Cleared webhook successfully.")
     except Exception as e:
-        print(f"Error clearing webhook: {e}")
+        print(f"[SYSTEM WARNING] Could not clear webhook: {e}")
 
-    bot.infinity_polling(skip_pending=True)
+    # Vòng lặp Polling chống crash app trên Render
+    while True:
+        try:
+            print("[SYSTEM INFO] Bot polling is starting...")
+            bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=10)
+        except Exception as e:
+            print(f"[SYSTEM ERROR] Bot polling crashed: {e}")
+            print("[SYSTEM INFO] Retrying in 10 seconds...")
+            time.sleep(10)
     
-                
