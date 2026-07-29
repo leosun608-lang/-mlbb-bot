@@ -339,9 +339,10 @@ def auto_pairing(message):
 if __name__ == '__main__':
     print("Starting MLBB Tournament Bot...")
     try:
-        bot.remove_webhook(drop_pending_updates=True)
+        bot.remove_webhook()
     except Exception as e:
         print(f"Error clearing webhook: {e}")
-        
+
     bot.infinity_polling(skip_pending=True)
+    
                 
