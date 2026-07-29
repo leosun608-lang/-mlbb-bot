@@ -21,7 +21,8 @@ t = threading.Thread(target=run_web, daemon=True)
 t.start()
 
 # --- 2. CONFIGURATION & SETUP ---
-TOKEN = os.environ.get('BOT_TOKEN', '7850532150:AAHnm2sAFBLj-msGXmKWadVkUpOm0gvXVmA')
+TOKEN = os.environ.get('BOT_TOKEN', '7850532150:AAHP9JuJZUZmTfGI6D7VQsNzy913mEX-yGQ')
+
 ADMIN_ID = int(os.environ.get('ADMIN_ID', 7940654648))
 
 FOLDER_RECEIPT = 'bien_lai'
