@@ -1,67 +1,77 @@
 import os
 import threading
 import pandas as pd
+import random
 from flask import Flask
 import telebot
 from telebot import types
 
-# --- 1. FLASK WEB SERVER (Duy trì bot trên Render) ---
+# --- 1. FLASK WEB SERVER (Duy trì bot hoạt động trên Render) ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot quản lý giải đấu đang hoạt động!"
+    return "Bot MLBB Tournament đang hoạt động!"
 
 def run_web():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
-t = threading.Thread(target=run_web)
+t = threading.Thread(target=run_web, daemon=True)
 t.start()
 
 # --- 2. CẤU HÌNH BOT ---
-TOKEN = '7850532150:AAFFPO5R9ZQb6c_mG7jLLSNz6zf-xzmjnAY'
-ADMIN_ID = 7940654648  # ID Telegram của bạn
+# Token mới nhất đã được cập nhật chính xác
+TOKEN = os.environ.get('BOT_TOKEN', '7850532150:AAHnm2sAFBLj-msGXmKWadVkUpOm0gvXVmA')
+ADMIN_ID = int(os.environ.get('ADMIN_ID', 7940654648))
 
 FOLDER_RECEIPT = 'bien_lai'
 EXCEL_FILE = 'danh_sach_giai_dau.xlsx'
 
+excel_lock = threading.Lock()  # Khóa an toàn chống xung đột file Excel
 bot = telebot.TeleBot(TOKEN)
-pending_review = {}
 user_states = {}
 
-# Khởi tạo file Excel nếu chưa có
+# Khởi tạo file Excel nếu chưa tồn tại
 def init_excel():
-    if not os.path.exists(EXCEL_FILE):
-        df = pd.DataFrame(columns=['User_ID', 'Username', 'IGN', 'Loai_Dang_Ky', 'Trang_Thai'])
-        df.to_excel(EXCEL_FILE, index=False)
+    with excel_lock:
+        if not os.path.exists(EXCEL_FILE):
+            df = pd.DataFrame(columns=['User_ID', 'Username', 'IGN', 'Loai_Dang_Ky', 'Trang_Thai'])
+            df.to_excel(EXCEL_FILE, index=False)
 
 init_excel()
 
-# Hàm lưu dữ liệu vào Excel
+# Hàm lưu dữ liệu người dùng vào file Excel
 def save_to_excel(user_id, username, ign, reg_type, status='Cho_Duyet'):
-    try:
-        df = pd.read_excel(EXCEL_FILE)
-        # Nếu user đã tồn tại thì cập nhật, chưa thì thêm mới
-        if user_id in df['User_ID'].values:
-            df.loc[df['User_ID'] == user_id, ['IGN', 'Loai_Dang_Ky', 'Trang_Thai']] = [ign, reg_type, status]
-        else:
-            new_row = pd.DataFrame({'User_ID': [user_id], 'Username': [username], 'IGN': [ign], 'Loai_Dang_Ky': [reg_type], 'Trang_Thai': [status]})
-            df = pd.concat([df, new_row], ignore_index=True)
-        df.to_excel(EXCEL_FILE, index=False)
-    except Exception as e:
-        print(f"Lỗi lưu Excel: {e}")
+    with excel_lock:
+        try:
+            if os.path.exists(EXCEL_FILE):
+                df = pd.read_excel(EXCEL_FILE)
+            else:
+                df = pd.DataFrame(columns=['User_ID', 'Username', 'IGN', 'Loai_Dang_Ky', 'Trang_Thai'])
 
-# Cập nhật trạng thái trong Excel khi Admin duyệt
+            if user_id in df['User_ID'].values:
+                df.loc[df['User_ID'] == user_id, ['Username', 'IGN', 'Loai_Dang_Ky', 'Trang_Thai']] = [username, ign, reg_type, status]
+            else:
+                new_row = pd.DataFrame({'User_ID': [user_id], 'Username': [username], 'IGN': [ign], 'Loai_Dang_Ky': [reg_type], 'Trang_Thai': [status]})
+                df = pd.concat([df, new_row], ignore_index=True)
+            
+            df.to_excel(EXCEL_FILE, index=False)
+        except Exception as e:
+            print(f"Lỗi lưu Excel: {e}")
+
+# Cập nhật trạng thái duyệt vào file Excel
 def update_excel_status(user_id, status):
-    try:
-        df = pd.read_excel(EXCEL_FILE)
-        df.loc[df['User_ID'] == int(user_id), 'Trang_Thai'] = status
-        df.to_excel(EXCEL_FILE, index=False)
-    except Exception as e:
-        print(f"Lỗi cập nhật trạng thái Excel: {e}")
+    with excel_lock:
+        try:
+            if os.path.exists(EXCEL_FILE):
+                df = pd.read_excel(EXCEL_FILE)
+                df.loc[df['User_ID'] == int(user_id), 'Trang_Thai'] = status
+                df.to_excel(EXCEL_FILE, index=False)
+        except Exception as e:
+            print(f"Lỗi cập nhật trạng thái Excel: {e}")
 
-# --- 3. XỬ LÝ LỆNH /START & MENU ---
+# --- 3. XỬ LÝ LỆNH /START & MENU KHỞI ĐỘNG ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -105,20 +115,13 @@ def handle_receipt(message):
     downloaded_file = bot.download_file(file_info.file_path)
 
     if not os.path.exists(FOLDER_RECEIPT):
-        os.makedirs(FOLDER_RECEIPT)
+        os.makedirs(FOLDER_RECEIPT, exist_ok=True)
+        
     img_path = os.path.join(FOLDER_RECEIPT, f'{user_id}.jpg')
     with open(img_path, 'wb') as new_file:
         new_file.write(downloaded_file)
 
-    # Lưu thông tin tạm vào Excel với trạng thái chờ duyệt
     save_to_excel(user_id, username, ign, reg_type, status='Cho_Duyet')
-
-    pending_review[str(user_id)] = {
-        'uid': user_id,
-        'data': username,
-        'ign': ign,
-        'reg_type': reg_type,
-    }
 
     markup = types.InlineKeyboardMarkup()
     btn_approve = types.InlineKeyboardButton('✅ Chấp thuận', callback_data=f'FA:{user_id}')
@@ -156,32 +159,35 @@ def admin_callback(call):
         bot.answer_callback_query(call.id, '⛔ Admins only.', show_alert=True)
         return
 
-    action, token = call.data.split(':', 1)
-    review = pending_review.pop(token, None)
+    action, target_user_id = call.data.split(':', 1)
 
-    if review is None:
-        bot.answer_callback_query(call.id, '⚠️ This review has already been processed.')
+    try:
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        return
-
-    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    except Exception:
+        pass
 
     if action == 'FA':
-        update_excel_status(token, 'Da_Duyet')
+        update_excel_status(target_user_id, 'Da_Duyet')
         bot.answer_callback_query(call.id, '✅ Approved successfully!')
-        bot.send_message(
-            review['uid'],
-            '✅ **Your registration has been approved!** Welcome to the tournament.',
-            parse_mode='Markdown',
-        )
+        try:
+            bot.send_message(
+                target_user_id,
+                '✅ **Your registration has been approved!** Welcome to the tournament.',
+                parse_mode='Markdown',
+            )
+        except Exception as e:
+            print(f"Lỗi gửi tin nhắn cho user {target_user_id}: {e}")
     else:
-        update_excel_status(token, 'Tu_Choi')
+        update_excel_status(target_user_id, 'Tu_Choi')
         bot.answer_callback_query(call.id, '❌ Rejected.')
-        bot.send_message(
-            review['uid'],
-            '❌ **Your receipt was rejected.** Please contact the organizer for support.',
-            parse_mode='Markdown',
-        )
+        try:
+            bot.send_message(
+                target_user_id,
+                '❌ **Your receipt was rejected.** Please contact the organizer for support.',
+                parse_mode='Markdown',
+            )
+        except Exception as e:
+            print(f"Lỗi gửi tin nhắn cho user {target_user_id}: {e}")
 
 # --- 6. TÍNH NĂNG TỰ ĐỘNG GHÉP CẶP ĐẤU CHO ADMIN ---
 @bot.message_handler(commands=['ghepcap_solo', 'ghepcap_team'])
@@ -192,38 +198,43 @@ def auto_pairing(message):
 
     reg_type = 'Solo 1v1' if 'ghepcap_solo' in message.text else 'Team 5v5'
     
-    try:
-        df = pd.read_excel(EXCEL_FILE)
-        # Lọc ra những người đã được duyệt thanh toán thuộc thể loại tương ứng
-        valid_players = df[(df['Loai_Dang_Ky'] == reg_type) & (df['Trang_Thai'] == 'Da_Duyet')]['IGN'].tolist()
+    with excel_lock:
+        try:
+            if not os.path.exists(EXCEL_FILE):
+                bot.reply_to(message, "⚠️ Chưa có dữ liệu đăng ký.")
+                return
 
-        if len(valid_players) < 2:
-            bot.reply_to(message, f"⚠️ Chưa đủ số lượng người chơi đã duyệt cho thể loại {reg_type} (Cần ít nhất 2).")
-            return
+            df = pd.read_excel(EXCEL_FILE)
+            valid_players = df[(df['Loai_Dang_Ky'] == reg_type) & (df['Trang_Thai'] == 'Da_Duyet')]['IGN'].tolist()
 
-        # Xáo trộn ngẫu nhiên danh sách người chơi
-        import random
-        random.shuffle(valid_players)
+            if len(valid_players) < 2:
+                bot.reply_to(message, f"⚠️ Chưa đủ số lượng người chơi đã duyệt cho thể loại {reg_type} (Cần ít nhất 2).")
+                return
 
-        pairing_text = f"⚔️ **DANH SÁCH GHẾP CẶP ĐẤU ({reg_type})** ⚔️\n\n"
-        match_idx = 1
-        
-        # Ghép cặp 2 người/đội một
-        for i in range(0, len(valid_players) - 1, 2):
-            pairing_text += f"Match {match_idx}: **{valid_players[i]}** vs **{valid_players[i+1]}**\n"
-            match_idx += 1
+            random.shuffle(valid_players)
 
-        # Nếu số lượng lẻ, người cuối cùng chờ vòng sau (bye)
-        if len(valid_players) % 2 != 0:
-            pairing_text += f"\n📌 Người chơi/Đội chờ (Bye): **{valid_players[-1]}**"
+            pairing_text = f"⚔️ **DANH SÁCH GHẾP CẶP ĐẤU ({reg_type})** ⚔️\n\n"
+            match_idx = 1
+            
+            for i in range(0, len(valid_players) - 1, 2):
+                pairing_text += f"Match {match_idx}: **{valid_players[i]}** vs **{valid_players[i+1]}**\n"
+                match_idx += 1
 
-        bot.send_message(message.chat.id, pairing_text, parse_mode='Markdown')
+            if len(valid_players) % 2 != 0:
+                pairing_text += f"\n📌 Người chơi/Đội chờ (Bye): **{valid_players[-1]}**"
 
-    except Exception as e:
-        bot.reply_to(message, f"❌ Lỗi khi đọc dữ liệu ghép cặp: {e}")
+            bot.send_message(message.chat.id, pairing_text, parse_mode='Markdown')
 
-# --- KHỞI CHẠY BOT ---
+        except Exception as e:
+            bot.reply_to(message, f"❌ Lỗi khi đọc dữ liệu ghép cặp: {e}")
+
+# --- 7. KHỞI CHẠY BOT (CHỐNG LỖI 409 & WEBHOOK KHÔNG TỚI) ---
 if __name__ == '__main__':
-    bot.remove_webhook()
-    bot.infinity_polling()
-    
+    print("Đang khởi động Bot...")
+    try:
+        bot.remove_webhook(drop_pending_updates=True)
+    except Exception as e:
+        print(f"Lỗi khi xoá webhook: {e}")
+        
+    bot.infinity_polling(skip_pending=True)
+                                                                                                       
