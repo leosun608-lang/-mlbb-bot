@@ -1,5 +1,6 @@
 import os
 import threading
+import pandas as pd
 from flask import Flask
 import telebot
 from telebot import types
@@ -9,7 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot đang hoạt động!"
+    return "Bot quản lý giải đấu đang hoạt động!"
 
 def run_web():
     port = int(os.environ.get('PORT', 10000))
@@ -23,10 +24,42 @@ TOKEN = '7850532150:AAFFPO5R9ZQb6c_mG7jLLSNz6zf-xzmjnAY'
 ADMIN_ID = 7940654648  # ID Telegram của bạn
 
 FOLDER_RECEIPT = 'bien_lai'
+EXCEL_FILE = 'danh_sach_giai_dau.xlsx'
 
 bot = telebot.TeleBot(TOKEN)
 pending_review = {}
 user_states = {}
+
+# Khởi tạo file Excel nếu chưa có
+def init_excel():
+    if not os.path.exists(EXCEL_FILE):
+        df = pd.DataFrame(columns=['User_ID', 'Username', 'IGN', 'Loai_Dang_Ky', 'Trang_Thai'])
+        df.to_excel(EXCEL_FILE, index=False)
+
+init_excel()
+
+# Hàm lưu dữ liệu vào Excel
+def save_to_excel(user_id, username, ign, reg_type, status='Cho_Duyet'):
+    try:
+        df = pd.read_excel(EXCEL_FILE)
+        # Nếu user đã tồn tại thì cập nhật, chưa thì thêm mới
+        if user_id in df['User_ID'].values:
+            df.loc[df['User_ID'] == user_id, ['IGN', 'Loai_Dang_Ky', 'Trang_Thai']] = [ign, reg_type, status]
+        else:
+            new_row = pd.DataFrame({'User_ID': [user_id], 'Username': [username], 'IGN': [ign], 'Loai_Dang_Ky': [reg_type], 'Trang_Thai': [status]})
+            df = pd.concat([df, new_row], ignore_index=True)
+        df.to_excel(EXCEL_FILE, index=False)
+    except Exception as e:
+        print(f"Lỗi lưu Excel: {e}")
+
+# Cập nhật trạng thái trong Excel khi Admin duyệt
+def update_excel_status(user_id, status):
+    try:
+        df = pd.read_excel(EXCEL_FILE)
+        df.loc[df['User_ID'] == int(user_id), 'Trang_Thai'] = status
+        df.to_excel(EXCEL_FILE, index=False)
+    except Exception as e:
+        print(f"Lỗi cập nhật trạng thái Excel: {e}")
 
 # --- 3. XỬ LÝ LỆNH /START & MENU ---
 @bot.message_handler(commands=['start'])
@@ -43,9 +76,9 @@ def send_welcome(message):
 
 @bot.message_handler(func=lambda msg: msg.text in ['⚔️ Register Solo 1v1', '🏆 Register 5v5 Team'])
 def handle_registration_choice(message):
-    reg_type = 'solo' if 'Solo' in message.text else 'team'
+    reg_type = 'Solo 1v1' if 'Solo' in message.text else 'Team 5v5'
     user_states[message.from_user.id] = {'reg_type': reg_type, 'step': 'waiting_for_ign'}
-    bot.reply_to(message, "📝 Please enter your **IGN (In-Game Name)**:", parse_mode='Markdown')
+    bot.reply_to(message, f"📝 You selected **{reg_type}**.\nPlease enter your **IGN (In-Game Name)**:", parse_mode='Markdown')
 
 @bot.message_handler(func=lambda message: message.from_user.id in user_states and user_states[message.from_user.id].get('step') == 'waiting_for_ign')
 def handle_ign(message):
@@ -60,12 +93,13 @@ def handle_ign(message):
 def handle_receipt(message):
     user_id = message.from_user.id
     
-    # Nếu người chơi gửi ảnh luôn mà chưa bấm menu, mặc định là solo
     if user_id not in user_states:
-        user_states[user_id] = {'reg_type': 'solo', 'ign': message.from_user.first_name}
+        user_states[user_id] = {'reg_type': 'Solo 1v1', 'ign': message.from_user.first_name}
     
     state = user_states[user_id]
     username = message.from_user.username or message.from_user.first_name or str(user_id)
+    ign = state.get('ign', 'Unknown')
+    reg_type = state.get('reg_type', 'Solo 1v1')
     
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded_file = bot.download_file(file_info.file_path)
@@ -76,12 +110,14 @@ def handle_receipt(message):
     with open(img_path, 'wb') as new_file:
         new_file.write(downloaded_file)
 
+    # Lưu thông tin tạm vào Excel với trạng thái chờ duyệt
+    save_to_excel(user_id, username, ign, reg_type, status='Cho_Duyet')
+
     pending_review[str(user_id)] = {
         'uid': user_id,
         'data': username,
-        'ign': state.get('ign', 'Unknown'),
-        'reg_type': state.get('reg_type', 'solo'),
-        'file_id': message.photo[-1].file_id,
+        'ign': ign,
+        'reg_type': reg_type,
     }
 
     markup = types.InlineKeyboardMarkup()
@@ -92,8 +128,8 @@ def handle_receipt(message):
     caption = (
         f"🚨 **Hóa đơn mới cần xem xét!**\n"
         f"- Người gửi: @{username}\n"
-        f"- IGN: {state.get('ign', 'N/A')}\n"
-        f"- Loại: {state.get('reg_type', 'solo').upper()}\n"
+        f"- IGN: {ign}\n"
+        f"- Loại: {reg_type}\n"
         f"- ID: `{user_id}`"
     )
     try:
@@ -111,7 +147,6 @@ def handle_receipt(message):
         message,
         '⏳ Your payment receipt has been sent to the organizers. Please wait a moment for verification.',
     )
-    # Reset state sau khi gửi xong
     user_states.pop(user_id, None)
 
 # --- 5. XỬ LÝ NÚT BẤM DUYỆT CỦA ADMIN ---
@@ -132,6 +167,7 @@ def admin_callback(call):
     bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
 
     if action == 'FA':
+        update_excel_status(token, 'Da_Duyet')
         bot.answer_callback_query(call.id, '✅ Approved successfully!')
         bot.send_message(
             review['uid'],
@@ -139,12 +175,52 @@ def admin_callback(call):
             parse_mode='Markdown',
         )
     else:
+        update_excel_status(token, 'Tu_Choi')
         bot.answer_callback_query(call.id, '❌ Rejected.')
         bot.send_message(
             review['uid'],
             '❌ **Your receipt was rejected.** Please contact the organizer for support.',
             parse_mode='Markdown',
         )
+
+# --- 6. TÍNH NĂNG TỰ ĐỘNG GHÉP CẶP ĐẤU CHO ADMIN ---
+@bot.message_handler(commands=['ghepcap_solo', 'ghepcap_team'])
+def auto_pairing(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "⛔ Lệnh này chỉ dành cho Admin.")
+        return
+
+    reg_type = 'Solo 1v1' if 'ghepcap_solo' in message.text else 'Team 5v5'
+    
+    try:
+        df = pd.read_excel(EXCEL_FILE)
+        # Lọc ra những người đã được duyệt thanh toán thuộc thể loại tương ứng
+        valid_players = df[(df['Loai_Dang_Ky'] == reg_type) & (df['Trang_Thai'] == 'Da_Duyet')]['IGN'].tolist()
+
+        if len(valid_players) < 2:
+            bot.reply_to(message, f"⚠️ Chưa đủ số lượng người chơi đã duyệt cho thể loại {reg_type} (Cần ít nhất 2).")
+            return
+
+        # Xáo trộn ngẫu nhiên danh sách người chơi
+        import random
+        random.shuffle(valid_players)
+
+        pairing_text = f"⚔️ **DANH SÁCH GHẾP CẶP ĐẤU ({reg_type})** ⚔️\n\n"
+        match_idx = 1
+        
+        # Ghép cặp 2 người/đội một
+        for i in range(0, len(valid_players) - 1, 2):
+            pairing_text += f"Match {match_idx}: **{valid_players[i]}** vs **{valid_players[i+1]}**\n"
+            match_idx += 1
+
+        # Nếu số lượng lẻ, người cuối cùng chờ vòng sau (bye)
+        if len(valid_players) % 2 != 0:
+            pairing_text += f"\n📌 Người chơi/Đội chờ (Bye): **{valid_players[-1]}**"
+
+        bot.send_message(message.chat.id, pairing_text, parse_mode='Markdown')
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Lỗi khi đọc dữ liệu ghép cặp: {e}")
 
 # --- KHỞI CHẠY BOT ---
 if __name__ == '__main__':
